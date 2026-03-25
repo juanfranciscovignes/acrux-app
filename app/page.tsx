@@ -672,19 +672,12 @@ export default function App() {
               <input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} style={styles.input} />
             </div>
             <button onClick={doLogin} style={styles.primaryButton}>Ingresar</button>
-            <div style={styles.helpText}>
-              Admin: <b>admin / admin123</b>
-              <br />
-              Operativo: <b>operativo / operativo123</b>
-            </div>
+            
           </div>
 
           {companyKey === "acrux" ? (
             <div style={styles.acruxPreviewCard}>
-              <div style={styles.acruxPreviewTitle}>Vista previa Acrux</div>
-              <div style={styles.acruxPreviewText}>
-                Seleccionaste ACRUX. Antes de ingresar, podés mostrar identidad visual y contexto de empresa.
-              </div>
+              
               {showAcruxLogo ? (
                 <>
                   <img src="/logo-acrux.png" alt="Logo Acrux" style={styles.acruxLogo} onError={() => setShowAcruxLogo(false)} />
@@ -698,10 +691,7 @@ export default function App() {
             </div>
           ) : companyKey === "puerto_bahia" ? (
             <div style={styles.acruxPreviewCard}>
-              <div style={styles.acruxPreviewTitle}>Vista previa Puerto Bahía</div>
-              <div style={styles.acruxPreviewText}>
-                Seleccionaste PUERTO BAHÍA. Podés mostrar acá su identidad visual antes de ingresar.
-              </div>
+              
               {showPuertoLogo ? (
                 <>
                   <img src="/logo-puerto-bahia.png" alt="Logo Puerto Bahía" style={styles.acruxLogo} onError={() => setShowPuertoLogo(false)} />
@@ -1477,3 +1467,4 @@ const styles: Record<string, React.CSSProperties> = {
     lineHeight: 1.6,
   },
 };
+
