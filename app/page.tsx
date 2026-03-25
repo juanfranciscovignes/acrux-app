@@ -1,6 +1,16 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+} from "recharts";
 
 type Role = "admin" | "operativo";
 type CompanyKey = "acrux" | "jc" | "puerto_bahia";
@@ -69,6 +79,14 @@ type SalaryRecord = {
   noSipa: number;
   socialCharges: number;
   totalCost: number;
+};
+
+type Movement = {
+  id: number;
+  date: string;
+  type: "ingreso" | "egreso";
+  description: string;
+  amount: number;
 };
 
 type Session = {
@@ -165,7 +183,11 @@ function money(value: number) {
 
 function monthLabel(key: string | null) {
   if (!key) return "";
-  return new Date(`${key}-01`).toLocaleDateString("es-AR", { month: "long", year: "numeric" });
+  const [year, month] = key.split("-").map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString("es-AR", {
+    month: "long",
+    year: "numeric",
+  });
 }
 
 function getCurrentMonthKey() {
@@ -200,20 +222,25 @@ function SmallCard({ title, value, subtitle }: { title: string; value: string; s
 
 function runTests() {
   console.assert(money(1000).length > 0, "money should format");
-  const ahorro = 100 - 60;
-  console.assert(ahorro === 40, "ahorro should be ingresos menos egresos");
-  const sipa = 1000 * 0.1;
-  const noSipa = 1000 * 0.09;
-  const cargas = 1000 * 0.259;
-  console.assert(sipa === 100, "SIPA should be 10%");
-  console.assert(noSipa === 90, "NO SIPA should be 9%");
-  console.assert(cargas === 259, "Cargas should be 25.9%");
+  console.assert(100 - 60 === 40, "ahorro should be ingresos menos egresos");
+  console.assert(1000 * 0.1 === 100, "SIPA should be 10%");
+  console.assert(1000 * 0.09 === 90, "NO SIPA should be 9%");
+  console.assert(1000 * 0.259 === 259, "Cargas should be 25.9%");
+  console.assert(addMonthsToKey("2026-01", 1) === "2026-02", "month increment should work");
+  const totals = [
+    { type: "ingreso", amount: 100 },
+    { type: "egreso", amount: 40 },
+  ];
+  const balance = totals.reduce((acc, item) => acc + (item.type === "ingreso" ? item.amount : -item.amount), 0);
+  console.assert(balance === 60, "movement balance should work");
 }
 
 runTests();
 
 export default function App() {
   const [companyKey, setCompanyKey] = useState<CompanyKey>("acrux");
+  const [showAcruxLogo, setShowAcruxLogo] = useState(true);
+  const [showPuertoLogo, setShowPuertoLogo] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [login, setLogin] = useState({ username: "admin", password: "admin123" });
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -224,6 +251,7 @@ export default function App() {
   const [debts, setDebts] = useState<Debt[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [salaryRecords, setSalaryRecords] = useState<SalaryRecord[]>([]);
+  const [movements, setMovements] = useState<Movement[]>([]);
 
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
@@ -264,6 +292,13 @@ export default function App() {
     extraPay: "0",
   });
 
+  const [newMovement, setNewMovement] = useState({
+    date: `${getCurrentMonthKey()}-01`,
+    type: "egreso" as "ingreso" | "egreso",
+    description: "",
+    amount: "",
+  });
+
   const canSeeMoney = session?.role === "admin";
 
   useEffect(() => {
@@ -272,6 +307,7 @@ export default function App() {
     setDebts(safeLoad(storageKey("debts", companyKey), [] as Debt[]));
     setGoals(safeLoad(storageKey("goals", companyKey), [] as Goal[]));
     setSalaryRecords(safeLoad(storageKey("salaries", companyKey), [] as SalaryRecord[]));
+    setMovements(safeLoad(storageKey("movements", companyKey), [] as Movement[]));
   }, [companyKey]);
 
   useEffect(() => {
@@ -304,13 +340,20 @@ export default function App() {
     }
   }, [salaryRecords, companyKey]);
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(storageKey("movements", companyKey), JSON.stringify(movements));
+    }
+  }, [movements, companyKey]);
+
   const monthKeys = useMemo(() => Object.keys(monthlyData).sort(), [monthlyData]);
 
   const availableMonths = useMemo(() => {
     const current = getCurrentMonthKey();
     const start = monthKeys.length ? monthKeys[0] : addMonthsToKey(current, -12);
-    const end = monthKeys.length ? monthKeys[monthKeys.length - 1] : addMonthsToKey(current, 12);
-    const safeEnd = end > addMonthsToKey(current, 12) ? end : addMonthsToKey(current, 12);
+    const end = monthKeys.length ? monthKeys[monthKeys.length - 1] : current;
+    const safeEnd = end > current ? end : current;
+
     const list: string[] = [];
     let cursor = start;
     while (cursor <= safeEnd) {
@@ -322,7 +365,8 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedMonth && availableMonths.length) {
-      setSelectedMonth(availableMonths[availableMonths.length - 1]);
+      const current = getCurrentMonthKey();
+      setSelectedMonth(availableMonths.includes(current) ? current : availableMonths[availableMonths.length - 1]);
     }
   }, [availableMonths, selectedMonth]);
 
@@ -333,28 +377,110 @@ export default function App() {
       return { ...prev, [selectedMonth]: { ...emptyMonthRow } };
     });
     setNewSalary((prev) => ({ ...prev, month: selectedMonth }));
+    setNewMovement((prev) => ({
+      ...prev,
+      date: `${selectedMonth}-01`,
+    }));
   }, [selectedMonth]);
+
+  const movementTotalsByMonth = useMemo(() => {
+    const totals: Record<string, { ingresos: number; egresos: number }> = {};
+    movements.forEach((m) => {
+      const month = m.date.slice(0, 7);
+      if (!totals[month]) totals[month] = { ingresos: 0, egresos: 0 };
+      if (m.type === "ingreso") totals[month].ingresos += m.amount;
+      if (m.type === "egreso") totals[month].egresos += m.amount;
+    });
+    return totals;
+  }, [movements]);
 
   const monthlySummaries = useMemo(() => {
     return Object.keys(monthlyData)
       .sort()
       .map((month) => {
         const row = monthlyData[month] || emptyMonthRow;
-        const ahorrado = Number(row.ingresos || 0) - Number(row.egresos || 0);
+        const movementTotals = movementTotalsByMonth[month];
+        const ingresos = movementTotals ? movementTotals.ingresos : Number(row.ingresos || 0);
+        const egresos = movementTotals ? movementTotals.egresos : Number(row.egresos || 0);
+        const saldoInicial = Number(row.saldoInicial || 0);
+        const pendienteCobro = Number(row.pendienteCobro || 0);
+        const ahorrado = ingresos - egresos;
+        const cajaReal = saldoInicial + ahorrado;
+        const saldoFinalManual = saldoInicial + ahorrado;
         return {
           month,
           ...row,
+          ingresos,
+          egresos,
+          saldoInicial,
+          pendienteCobro,
+          cajaReal,
+          saldoFinalManual,
           ahorrado,
-          resultado: Number(row.saldoFinalManual || 0) - Number(row.saldoInicial || 0),
+          resultado: saldoFinalManual - saldoInicial,
         };
       });
-  }, [monthlyData]);
+  }, [monthlyData, movementTotalsByMonth]);
 
   const selectedMonthSummary = useMemo(() => {
     return monthlySummaries.find((m) => m.month === selectedMonth) || null;
   }, [monthlySummaries, selectedMonth]);
 
   const totalAhorrado = useMemo(() => monthlySummaries.reduce((acc, m) => acc + m.ahorrado, 0), [monthlySummaries]);
+
+  const activeTasks = tasks.filter((t) => t.status !== "Terminado");
+  const pendingDebts = debts.filter((d) => d.status === "Pendiente" || d.status === "A pagar");
+
+  const salaryRecordsOfMonth = useMemo(() => {
+    if (!selectedMonth) return salaryRecords;
+    return salaryRecords.filter((r) => r.month === selectedMonth);
+  }, [salaryRecords, selectedMonth]);
+
+  const salaryTotals = useMemo(() => {
+    return salaryRecordsOfMonth.reduce(
+      (acc, r) => {
+        acc.baseSalary += Number(r.baseSalary || 0);
+        acc.socialCharges += Number(r.socialCharges || 0);
+        acc.sipa += Number(r.sipa || 0);
+        acc.noSipa += Number(r.noSipa || 0);
+        return acc;
+      },
+      { baseSalary: 0, socialCharges: 0, sipa: 0, noSipa: 0 },
+    );
+  }, [salaryRecordsOfMonth]);
+
+  const movementsOfMonth = useMemo(() => {
+    if (!selectedMonth) return [];
+    return movements.filter((m) => m.date.startsWith(selectedMonth));
+  }, [movements, selectedMonth]);
+
+  const totalIngresosMes = useMemo(
+    () => movementsOfMonth.filter((m) => m.type === "ingreso").reduce((acc, m) => acc + m.amount, 0),
+    [movementsOfMonth],
+  );
+
+  const totalEgresosMes = useMemo(
+    () => movementsOfMonth.filter((m) => m.type === "egreso").reduce((acc, m) => acc + m.amount, 0),
+    [movementsOfMonth],
+  );
+
+  const chartIngresosEgresos = useMemo(() => {
+    if (!selectedMonthSummary) return [];
+    return [
+      { name: "Ingresos", value: selectedMonthSummary.ingresos || 0 },
+      { name: "Egresos", value: selectedMonthSummary.egresos || 0 },
+    ];
+  }, [selectedMonthSummary]);
+
+  const chartEvolucionMensual = useMemo(() => {
+    return monthlySummaries.map((m) => ({
+      mes: monthLabel(m.month),
+      ingresos: m.ingresos || 0,
+      egresos: m.egresos || 0,
+      ahorro: m.ahorrado || 0,
+      colchon: m.saldoFinalManual || 0,
+    }));
+  }, [monthlySummaries]);
 
   const doLogin = () => {
     const found = users.find((u) => u.username === login.username && u.password === login.password);
@@ -442,6 +568,14 @@ export default function App() {
     );
   };
 
+  const updateDebtStatus = (id: number, status: DebtStatus) => {
+    setDebts((prev) => prev.map((d) => (d.id === id ? { ...d, status } : d)));
+  };
+
+  const deleteDebt = (id: number) => {
+    setDebts((prev) => prev.filter((d) => d.id !== id));
+  };
+
   const addGoal = () => {
     if (!newGoal.title || !newGoal.amount) return;
     setGoals((prev) => [...prev, { id: Date.now(), title: newGoal.title, amount: Number(newGoal.amount) }]);
@@ -482,37 +616,104 @@ export default function App() {
     setSalaryRecords((prev) => prev.filter((r) => r.id !== id));
   };
 
-  const activeTasks = tasks.filter((t) => t.status !== "Terminado");
+  const addMovement = () => {
+    if (!newMovement.date || !newMovement.amount) return;
+
+    const movementMonth = newMovement.date.slice(0, 7);
+
+    setMovements((prev) => [
+      {
+        id: Date.now(),
+        date: newMovement.date,
+        type: newMovement.type,
+        description: newMovement.description,
+        amount: Number(newMovement.amount),
+      },
+      ...prev,
+    ]);
+
+    setSelectedMonth(movementMonth);
+
+    setNewMovement({
+      date: `${movementMonth}-01`,
+      type: "egreso",
+      description: "",
+      amount: "",
+    });
+  };
+
+  const deleteMovement = (id: number) => {
+    setMovements((prev) => prev.filter((m) => m.id !== id));
+  };
 
   if (!session) {
     return (
       <div style={styles.pageCenter}>
-        <div style={styles.loginBox}>
-          <h1 style={styles.h1}>Gestión Interna</h1>
-          <div style={styles.field}>
-            <label>Empresa</label>
-            <select value={companyKey} onChange={(e) => setCompanyKey(e.target.value as CompanyKey)} style={styles.input}>
-              {companies.map((c) => (
-                <option key={c.key} value={c.key}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
+        <div style={styles.loginBackgroundSea} />
+        <div style={styles.loginShell}>
+          <div style={styles.loginBox}>
+            <h1 style={styles.h1}>Gestión Interna</h1>
+            <div style={styles.field}>
+              <label>Empresa</label>
+              <select value={companyKey} onChange={(e) => setCompanyKey(e.target.value as CompanyKey)} style={styles.input}>
+                {companies.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={styles.field}>
+              <label>Usuario</label>
+              <input value={login.username} onChange={(e) => setLogin({ ...login, username: e.target.value })} style={styles.input} />
+            </div>
+            <div style={styles.field}>
+              <label>Contraseña</label>
+              <input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} style={styles.input} />
+            </div>
+            <button onClick={doLogin} style={styles.primaryButton}>Ingresar</button>
+            <div style={styles.helpText}>
+              Admin: <b>admin / admin123</b>
+              <br />
+              Operativo: <b>operativo / operativo123</b>
+            </div>
           </div>
-          <div style={styles.field}>
-            <label>Usuario</label>
-            <input value={login.username} onChange={(e) => setLogin({ ...login, username: e.target.value })} style={styles.input} />
-          </div>
-          <div style={styles.field}>
-            <label>Contraseña</label>
-            <input type="password" value={login.password} onChange={(e) => setLogin({ ...login, password: e.target.value })} style={styles.input} />
-          </div>
-          <button onClick={doLogin} style={styles.primaryButton}>Ingresar</button>
-          <div style={styles.helpText}>
-            Admin: <b>admin / admin123</b>
-            <br />
-            Operativo: <b>operativo / operativo123</b>
-          </div>
+
+          {companyKey === "acrux" ? (
+            <div style={styles.acruxPreviewCard}>
+              <div style={styles.acruxPreviewTitle}>Vista previa Acrux</div>
+              <div style={styles.acruxPreviewText}>
+                Seleccionaste ACRUX. Antes de ingresar, podés mostrar identidad visual y contexto de empresa.
+              </div>
+              {showAcruxLogo ? (
+                <>
+                  <img src="/logo-acrux.png" alt="Logo Acrux" style={styles.acruxLogo} onError={() => setShowAcruxLogo(false)} />
+                  <div style={styles.logoCaption}>Charrúa</div>
+                </>
+              ) : (
+                <div style={styles.acruxLogoFallback}>
+                  Colocá tu imagen en <b>public/logo-acrux.png</b> para verla acá.
+                </div>
+              )}
+            </div>
+          ) : companyKey === "puerto_bahia" ? (
+            <div style={styles.acruxPreviewCard}>
+              <div style={styles.acruxPreviewTitle}>Vista previa Puerto Bahía</div>
+              <div style={styles.acruxPreviewText}>
+                Seleccionaste PUERTO BAHÍA. Podés mostrar acá su identidad visual antes de ingresar.
+              </div>
+              {showPuertoLogo ? (
+                <>
+                  <img src="/logo-puerto-bahia.png" alt="Logo Puerto Bahía" style={styles.acruxLogo} onError={() => setShowPuertoLogo(false)} />
+                  <div style={styles.logoCaption}>Santiago</div>
+                </>
+              ) : (
+                <div style={styles.acruxLogoFallback}>
+                  Colocá tu imagen en <b>public/logo-puerto-bahia.png</b> para verla acá.
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -538,6 +739,7 @@ export default function App() {
             <SmallCard title={`Caja real ${monthLabel(selectedMonth)}`} value={money(selectedMonthSummary?.cajaReal || 0)} />
             <SmallCard title={`Colchón ${monthLabel(selectedMonth)}`} value={money(selectedMonthSummary?.saldoFinalManual || 0)} />
             <SmallCard title={`Pendiente ${monthLabel(selectedMonth)}`} value={money(selectedMonthSummary?.pendienteCobro || 0)} />
+            <SmallCard title={`Ahorro ${monthLabel(selectedMonth)}`} value={money(selectedMonthSummary?.ahorrado || 0)} />
           </>
         ) : (
           <SmallCard title="Modo operativo" value="Sin acceso a finanzas" subtitle="No ve importes ni secciones financieras" />
@@ -557,14 +759,11 @@ export default function App() {
         <div style={styles.tabRow}>
           {[
             "dashboard",
+            "flujo",
             ...(canSeeMoney ? ["deudas", "objetivos", "sueldos"] : []),
             "tareas",
           ].map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              style={activeTab === tab ? styles.tabActive : styles.tab}
-            >
+            <button key={tab} onClick={() => setActiveTab(tab)} style={activeTab === tab ? styles.tabActive : styles.tab}>
               {tab.toUpperCase()}
             </button>
           ))}
@@ -579,11 +778,20 @@ export default function App() {
             </button>
             {showAlerts ? (
               <div style={{ marginTop: 12 }}>
-                {activeTasks.length === 0 ? <div>No hay tareas activas.</div> : null}
+                {activeTasks.length === 0 && pendingDebts.length === 0 ? <div>No hay alertas activas.</div> : null}
                 {activeTasks.slice(0, 5).map((t) => (
                   <div key={t.id} style={styles.listRow}>
                     <span>{t.title}</span>
                     <b>{t.urgency}</b>
+                  </div>
+                ))}
+                {pendingDebts.slice(0, 5).map((d) => (
+                  <div key={d.id} style={styles.listRow}>
+                    <span>
+                      {d.client || d.invoice || "Deuda"} · {money(d.amount || d.installmentAmount || 0)}
+                      {d.dueDate ? ` · ${d.dueDate}` : ""}
+                    </span>
+                    <b>{d.status}</b>
                   </div>
                 ))}
               </div>
@@ -598,7 +806,7 @@ export default function App() {
               <div style={styles.field}><label>Caja real</label><input type="number" value={selectedMonthSummary?.cajaReal || 0} onChange={(e) => updateMonthField("cajaReal", e.target.value)} style={styles.input} /></div>
               <div style={styles.field}><label>Pendiente de cobro</label><input type="number" value={selectedMonthSummary?.pendienteCobro || 0} onChange={(e) => updateMonthField("pendienteCobro", e.target.value)} style={styles.input} /></div>
               <div style={styles.field}><label>Saldo final</label><input type="number" value={selectedMonthSummary?.saldoFinalManual || 0} onChange={(e) => updateMonthField("saldoFinalManual", e.target.value)} style={styles.input} /></div>
-              <div style={styles.helpText}>Ahorrado del mes: <b>{money(selectedMonthSummary?.ahorrado || 0)}</b></div>
+              <div style={styles.helpText}>Ahorro del mes: <b>{money(selectedMonthSummary?.ahorrado || 0)}</b></div>
             </SectionCard>
           ) : (
             <SectionCard title="Vista operativa">
@@ -607,33 +815,113 @@ export default function App() {
           )}
 
           {canSeeMoney ? (
-            <SectionCard title="Resumen por mes">
-              <div style={styles.tableWrap}>
-                <table style={styles.table}>
-                  <thead>
-                    <tr>
-                      <th style={styles.th}>Mes</th>
-                      <th style={styles.th}>Ingresos</th>
-                      <th style={styles.th}>Egresos</th>
-                      <th style={styles.th}>Ahorrado</th>
-                      <th style={styles.th}>Colchón</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monthlySummaries.map((m) => (
-                      <tr key={m.month}>
-                        <td style={styles.td}>{monthLabel(m.month)}</td>
-                        <td style={styles.td}>{money(m.ingresos)}</td>
-                        <td style={styles.td}>{money(m.egresos)}</td>
-                        <td style={styles.td}>{money(m.ahorrado)}</td>
-                        <td style={styles.td}>{money(m.saldoFinalManual)}</td>
+            <>
+              <SectionCard title="Resumen por mes">
+                <div style={styles.tableWrap}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Mes</th>
+                        <th style={styles.th}>Ingresos</th>
+                        <th style={styles.th}>Egresos</th>
+                        <th style={styles.th}>Ahorrado</th>
+                        <th style={styles.th}>Colchón</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </SectionCard>
+                    </thead>
+                    <tbody>
+                      {monthlySummaries.map((m) => (
+                        <tr key={m.month}>
+                          <td style={styles.td}>{monthLabel(m.month)}</td>
+                          <td style={styles.td}>{money(m.ingresos)}</td>
+                          <td style={styles.td}>{money(m.egresos)}</td>
+                          <td style={styles.td}>{money(m.ahorrado)}</td>
+                          <td style={styles.td}>{money(m.saldoFinalManual)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Ingresos vs Egresos del mes">
+                <div style={{ width: "100%", height: 280 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={chartIngresosEgresos}>
+                      <XAxis dataKey="name" />
+                      <YAxis />
+                      <Tooltip formatter={(value) => money(Number(value))} />
+                      <Bar dataKey="value" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </SectionCard>
+
+              <SectionCard title="Evolución mensual">
+                <div style={{ width: "100%", height: 320 }}>
+                  <ResponsiveContainer>
+                    <LineChart data={chartEvolucionMensual}>
+                      <XAxis dataKey="mes" />
+                      <YAxis />
+                      <Tooltip formatter={(value) => money(Number(value))} />
+                      <Line type="monotone" dataKey="ingresos" />
+                      <Line type="monotone" dataKey="egresos" />
+                      <Line type="monotone" dataKey="ahorro" />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </SectionCard>
+            </>
           ) : null}
+        </div>
+      ) : null}
+
+      {activeTab === "flujo" ? (
+        <div style={styles.grid2}>
+          <SectionCard title="Nuevo movimiento">
+            <div style={styles.field}><label>Fecha</label><input type="date" value={newMovement.date} onChange={(e) => setNewMovement({ ...newMovement, date: e.target.value })} style={styles.input} /></div>
+            <div style={styles.field}><label>Tipo</label><select value={newMovement.type} onChange={(e) => setNewMovement({ ...newMovement, type: e.target.value as "ingreso" | "egreso" })} style={styles.input}><option value="ingreso">Ingreso</option><option value="egreso">Egreso</option></select></div>
+            <div style={styles.field}><label>Descripción</label><input value={newMovement.description} onChange={(e) => setNewMovement({ ...newMovement, description: e.target.value })} style={styles.input} /></div>
+            <div style={styles.field}><label>Monto</label><input type="number" value={newMovement.amount} onChange={(e) => setNewMovement({ ...newMovement, amount: e.target.value })} style={styles.input} /></div>
+            <button onClick={addMovement} style={styles.primaryButton}>Agregar</button>
+          </SectionCard>
+
+          <SectionCard title="Movimientos del mes">
+            <div style={{ marginBottom: 12 }}>
+              <b>Ingresos:</b> {money(totalIngresosMes)}
+              <br />
+              <b>Egresos:</b> {money(totalEgresosMes)}
+            </div>
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Fecha</th>
+                    <th style={styles.th}>Tipo</th>
+                    <th style={styles.th}>Descripción</th>
+                    <th style={styles.th}>Monto</th>
+                    <th style={styles.th}>Acción</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {movementsOfMonth.length === 0 ? (
+                    <tr>
+                      <td style={styles.td} colSpan={5}>No hay movimientos cargados para este mes.</td>
+                    </tr>
+                  ) : (
+                    movementsOfMonth.map((m) => (
+                      <tr key={m.id}>
+                        <td style={styles.td}>{m.date}</td>
+                        <td style={styles.td}>{m.type}</td>
+                        <td style={styles.td}>{m.description}</td>
+                        <td style={styles.td}>{money(m.amount)}</td>
+                        <td style={styles.td}><button onClick={() => deleteMovement(m.id)} style={styles.deleteButton}>Eliminar</button></td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </SectionCard>
         </div>
       ) : null}
 
@@ -663,15 +951,40 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {tasks.map((t) => (
-                    <tr key={t.id}>
-                      <td style={styles.td}>{t.title}</td>
-                      <td style={styles.td}><select value={t.status} onChange={(e) => updateTaskField(t.id, "status", e.target.value)} style={styles.inputMini}><option>Pendiente</option><option>En proceso</option><option>Terminado</option></select></td>
-                      <td style={styles.td}><select value={t.difficulty} onChange={(e) => updateTaskField(t.id, "difficulty", e.target.value)} style={styles.inputMini}><option>Fácil</option><option>Intermedio</option><option>Difícil</option></select></td>
-                      <td style={styles.td}><select value={t.urgency} onChange={(e) => updateTaskField(t.id, "urgency", e.target.value)} style={styles.inputMini}><option>Baja</option><option>Media</option><option>Alta</option><option>Crítica</option></select></td>
-                      <td style={styles.td}><button onClick={() => deleteTask(t.id)} style={styles.deleteButton}>Eliminar</button></td>
+                  {tasks.length === 0 ? (
+                    <tr>
+                      <td style={styles.td} colSpan={5}>No hay tareas cargadas.</td>
                     </tr>
-                  ))}
+                  ) : (
+                    tasks.map((t) => (
+                      <tr key={t.id}>
+                        <td style={styles.td}>{t.title}</td>
+                        <td style={styles.td}>
+                          <select value={t.status} onChange={(e) => updateTaskField(t.id, "status", e.target.value)} style={styles.inputMini}>
+                            <option>Pendiente</option>
+                            <option>En proceso</option>
+                            <option>Terminado</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}>
+                          <select value={t.difficulty} onChange={(e) => updateTaskField(t.id, "difficulty", e.target.value)} style={styles.inputMini}>
+                            <option>Fácil</option>
+                            <option>Intermedio</option>
+                            <option>Difícil</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}>
+                          <select value={t.urgency} onChange={(e) => updateTaskField(t.id, "urgency", e.target.value)} style={styles.inputMini}>
+                            <option>Baja</option>
+                            <option>Media</option>
+                            <option>Alta</option>
+                            <option>Crítica</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}><button onClick={() => deleteTask(t.id)} style={styles.deleteButton}>Eliminar</button></td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -708,19 +1021,34 @@ export default function App() {
                     <th style={styles.th}>Cuotas</th>
                     <th style={styles.th}>Monto</th>
                     <th style={styles.th}>Acción</th>
+                    <th style={styles.th}>Eliminar</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {debts.map((d) => (
-                    <tr key={d.id}>
-                      <td style={styles.td}>{d.client}</td>
-                      <td style={styles.td}>{d.invoice}</td>
-                      <td style={styles.td}>{d.status}</td>
-                      <td style={styles.td}>{d.isInstallmentPlan ? `${d.paidInstallments || 0}/${d.totalInstallments || 0}` : "-"}</td>
-                      <td style={styles.td}>{money(d.isInstallmentPlan ? d.installmentAmount || 0 : d.amount)}</td>
-                      <td style={styles.td}>{d.isInstallmentPlan && (d.paidInstallments || 0) < (d.totalInstallments || 0) ? <button onClick={() => markInstallmentPaid(d.id)} style={styles.secondaryButtonSmall}>Pagar cuota</button> : "-"}</td>
+                  {debts.length === 0 ? (
+                    <tr>
+                      <td style={styles.td} colSpan={7}>No hay deudas cargadas.</td>
                     </tr>
-                  ))}
+                  ) : (
+                    debts.map((d) => (
+                      <tr key={d.id}>
+                        <td style={styles.td}>{d.client}</td>
+                        <td style={styles.td}>{d.invoice}</td>
+                        <td style={styles.td}>
+                          <select value={d.status} onChange={(e) => updateDebtStatus(d.id, e.target.value as DebtStatus)} style={styles.inputMini}>
+                            <option value="Pendiente">Pendiente</option>
+                            <option value="A pagar">A pagar</option>
+                            <option value="Pagado">Pagada</option>
+                            <option value="Cobrado">Cobrado</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}>{d.isInstallmentPlan ? `${d.paidInstallments || 0}/${d.totalInstallments || 0}` : "-"}</td>
+                        <td style={styles.td}>{money(d.isInstallmentPlan ? d.installmentAmount || 0 : d.amount)}</td>
+                        <td style={styles.td}>{d.isInstallmentPlan && (d.paidInstallments || 0) < (d.totalInstallments || 0) ? <button onClick={() => markInstallmentPaid(d.id)} style={styles.secondaryButtonSmall}>Pagar cuota</button> : "-"}</td>
+                        <td style={styles.td}><button onClick={() => deleteDebt(d.id)} style={styles.deleteButton}>Eliminar</button></td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -785,6 +1113,15 @@ export default function App() {
             <button onClick={addSalaryRecord} style={styles.primaryButton}>Agregar sueldo</button>
           </SectionCard>
 
+          <SectionCard title="Resumen de sueldos del mes">
+            <div style={styles.rowWrap}>
+              <SmallCard title="Total sueldos" value={money(salaryTotals.baseSalary)} />
+              <SmallCard title="Total cargas sociales" value={money(salaryTotals.socialCharges)} />
+              <SmallCard title="Total SIPA" value={money(salaryTotals.sipa)} />
+              <SmallCard title="Total NO SIPA" value={money(salaryTotals.noSipa)} />
+            </div>
+          </SectionCard>
+
           <SectionCard title="Sueldos cargados">
             <div style={styles.tableWrap}>
               <table style={styles.table}>
@@ -801,18 +1138,24 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {salaryRecords.map((r) => (
-                    <tr key={r.id}>
-                      <td style={styles.td}>{r.month}</td>
-                      <td style={styles.td}>{r.person}</td>
-                      <td style={styles.td}>{money(r.grossSalary)}</td>
-                      <td style={styles.td}>{money(r.sipa)}</td>
-                      <td style={styles.td}>{money(r.noSipa)}</td>
-                      <td style={styles.td}>{money(r.socialCharges)}</td>
-                      <td style={styles.td}>{money(r.totalCost)}</td>
-                      <td style={styles.td}><button onClick={() => deleteSalaryRecord(r.id)} style={styles.deleteButton}>Eliminar</button></td>
+                  {salaryRecords.length === 0 ? (
+                    <tr>
+                      <td style={styles.td} colSpan={8}>No hay sueldos cargados.</td>
                     </tr>
-                  ))}
+                  ) : (
+                    salaryRecords.map((r) => (
+                      <tr key={r.id}>
+                        <td style={styles.td}>{r.month}</td>
+                        <td style={styles.td}>{r.person}</td>
+                        <td style={styles.td}>{money(r.grossSalary)}</td>
+                        <td style={styles.td}>{money(r.sipa)}</td>
+                        <td style={styles.td}>{money(r.noSipa)}</td>
+                        <td style={styles.td}>{money(r.socialCharges)}</td>
+                        <td style={styles.td}>{money(r.totalCost)}</td>
+                        <td style={styles.td}><button onClick={() => deleteSalaryRecord(r.id)} style={styles.deleteButton}>Eliminar</button></td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -833,12 +1176,34 @@ const styles: Record<string, React.CSSProperties> = {
   },
   pageCenter: {
     minHeight: "100vh",
-    background: "linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%)",
+    background: "linear-gradient(180deg, #eef6fb 0%, #dbeafe 55%, #eff6ff 100%)",
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
     padding: 24,
     fontFamily: "Arial, sans-serif",
+    position: "relative",
+    overflow: "hidden",
+  },
+  loginBackgroundSea: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: "38%",
+    background: "linear-gradient(180deg, rgba(56,189,248,0.08) 0%, rgba(14,165,233,0.18) 25%, rgba(3,105,161,0.28) 100%)",
+    backdropFilter: "blur(1px)",
+    clipPath: "polygon(0 28%, 10% 34%, 22% 30%, 34% 38%, 46% 32%, 58% 40%, 70% 33%, 82% 39%, 100% 30%, 100% 100%, 0 100%)",
+  },
+  loginShell: {
+    position: "relative",
+    zIndex: 1,
+    width: "100%",
+    maxWidth: 1080,
+    display: "grid",
+    gridTemplateColumns: "minmax(320px, 440px) minmax(280px, 1fr)",
+    gap: 24,
+    alignItems: "center",
   },
   loginBox: {
     width: 440,
@@ -1056,5 +1421,59 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 14,
     marginBottom: 10,
     border: "1px solid #e2e8f0",
+  },
+  acruxPreviewCard: {
+    background: "rgba(255,255,255,0.7)",
+    border: "1px solid rgba(226,232,240,0.9)",
+    borderRadius: 24,
+    padding: 24,
+    minHeight: 420,
+    boxShadow: "0 24px 50px rgba(15,23,42,0.10)",
+    backdropFilter: "blur(6px)",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    textAlign: "center",
+  },
+  acruxPreviewTitle: {
+    fontSize: 28,
+    fontWeight: 800,
+    marginBottom: 10,
+    color: "#0f172a",
+  },
+  acruxPreviewText: {
+    fontSize: 15,
+    lineHeight: 1.6,
+    color: "#475569",
+    maxWidth: 420,
+    marginBottom: 18,
+  },
+  acruxLogo: {
+    width: "100%",
+    maxWidth: 430,
+    objectFit: "contain",
+    filter: "drop-shadow(0 16px 24px rgba(15,23,42,0.18))",
+  },
+  logoCaption: {
+    marginTop: 10,
+    fontSize: 20,
+    fontWeight: 800,
+    color: "#0f172a",
+    letterSpacing: "0.02em",
+  },
+  acruxLogoFallback: {
+    width: "100%",
+    maxWidth: 420,
+    minHeight: 180,
+    borderRadius: 18,
+    border: "1px dashed #94a3b8",
+    background: "rgba(255,255,255,0.7)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 20,
+    color: "#475569",
+    lineHeight: 1.6,
   },
 };
